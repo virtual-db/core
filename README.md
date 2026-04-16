@@ -1,496 +1,371 @@
 # vdb-core
 
-The central framework for VirtualDB. `vdb-core` owns the request pipeline, event bus, in-memory mutation store (delta), transaction isolation, schema cache, connection tracking, and plugin runtime. It has no knowledge of any particular database wire protocol — that belongs to the driver layer above it.
+`vdb-core` is the Go framework that powers VirtualDB -- a database proxy that sits transparently in front of an existing database server. The framework intercepts every connection, transaction, query, and record-level operation, routes each through an ordered pipeline of handlers, and maintains an in-memory delta store that overlays committed writes on top of source data without modifying the underlying database.
 
-```
-vdb-mysql
-  └── github.com/AnqorDX/vdb-mysql-driver
-        └── github.com/AnqorDX/vdb-core          ← this module
-              ├── github.com/AnqorDX/pipeline
-              └── github.com/AnqorDX/dispatch
-```
-
-External dependencies are intentionally minimal: only the `pipeline` and `dispatch` primitives. No database drivers, no network libraries.
+`vdb-core` is the engine. It does not speak any wire protocol on its own. A driver (e.g. `vdb-mysql-driver`) implements the `Server` interface, receives the `DriverAPI` bridge, and calls back into the framework as database events occur.
 
 ---
 
-## Table of contents
+## Requirements
 
-1. [Concepts](#concepts)
-2. [App lifecycle](#app-lifecycle)
-3. [DriverAPI — the bridge](#driverapi--the-bridge)
-4. [Pipelines](#pipelines)
-5. [Events](#events)
-6. [Extension points](#extension-points)
-7. [Delta store](#delta-store)
-8. [Transaction isolation](#transaction-isolation)
-9. [Schema cache](#schema-cache)
-10. [Plugin system](#plugin-system)
-11. [Package map](#package-map)
+- Go 1.23 or later
+- Module path: `github.com/AnqorDX/vdb-core`
 
 ---
 
-## Concepts
+## Dependencies
 
-### Pipeline
-
-A pipeline is an ordered list of named **points**. Handlers attach to points at a numeric priority. When the pipeline is processed, all handlers at each point run in ascending priority order, passing `(ctx, payload)` through the chain. A handler returns a (possibly mutated) `(ctx, payload, error)` tuple; a non-nil error aborts the run immediately.
-
-Points follow the naming convention `vdb.<pipeline>.<stage>`, e.g. `vdb.write.insert.apply`. The standard stages are `build_context`, the domain stage, and `emit`.
-
-### Event bus
-
-Events are fire-and-forget notifications emitted after a pipeline completes. Any number of subscribers can listen on a named event. A subscriber returning a non-nil error is logged but does not affect other subscribers or the emitting pipeline. Events are not retried.
-
-### Delta store
-
-The delta is a process-wide, concurrency-safe in-memory mutation store. It records every write that clients issue — inserts, updates, and deletes — without forwarding them to the source database. When the driver reads rows, the framework overlays the delta on top of the source result to produce the merged view that clients see.
-
-### Transaction isolation
-
-Each connection that opens a transaction receives a **private staging delta** (`TxDelta`). Writes inside the transaction go to `TxDelta` instead of the shared live delta, keeping them invisible to all other connections. `COMMIT` merges `TxDelta` into the live delta (last-write-wins). `ROLLBACK` simply nils `TxDelta` — because the live delta was never touched, no undo work is required.
+| Module | Role |
+|---|---|
+| `github.com/AnqorDX/pipeline` | Ordered, priority-based pipeline engine |
+| `github.com/AnqorDX/dispatch` | Fire-and-forget event bus |
+| `gopkg.in/yaml.v3` | Plugin manifest parsing |
 
 ---
 
-## App lifecycle
+## Architecture Overview
 
-```go
-cfg := core.Config{PluginDir: "/opt/vdb/plugins"}
-app := core.New(cfg)
-
-// Obtain the DriverAPI bridge and hand it to the driver constructor.
-api    := app.DriverAPI()
-server := mydriver.New(driverConfig, api)
-
-// Register custom pipeline handlers and event subscribers.
-app.Attach("vdb.records.source.transform", 50, myTransformHandler)
-app.Subscribe("vdb.record.inserted", myAuditLogger)
-
-// Wire the driver and block until SIGTERM/SIGINT or Stop().
-app.UseDriver(server)
-if err := app.Run(); err != nil {
-    log.Fatal(err)
-}
+```
+                  +------------------------------------------+
+                  |                 vdb-core                  |
+                  |                                           |
+  Driver ------->  |  DriverAPI  -->  Pipelines  -->  Delta  |
+  (e.g. MySQL)    |                      |                    |
+                  |               Event Bus                   |
+                  |                      |                    |
+                  |              Plugin Manager               |
+                  +------------------------------------------+
+                                         |
+                              Out-of-process Plugins
+                              (JSON-RPC 2.0 / Unix socket)
 ```
 
-`Attach`, `Subscribe`, `DeclareEvent`, and `DeclarePipeline` all panic if called after `Run` has started — the framework is intentionally configuration-time-only.
+### Core subsystems
 
-### Startup sequence inside `Run`
+**Pipeline engine** -- Named `vdb.*` pipelines cover the full lifecycle of a database session. Each pipeline has an ordered sequence of named points. Handlers attach to individual points at a declared priority. Multiple handlers at the same point run in priority order; lower numbers run first.
 
-| Step | Pipeline | What happens |
-|---|---|---|
-| 1 | `vdb.context.create` | Builds and seals the immutable `GlobalContext`. |
-| 2 | *(plugin manager)* | Discovers plugin subdirectories, launches subprocesses, and wires their declared handlers and subscriptions. |
-| 3 | `vdb.server.start` | Configures and launches the database listener in a goroutine. |
-| 4 | *(idle loop)* | Blocks until a OS signal, a server error, or `Stop()`. |
+**Event bus** -- Named `vdb.*` events are emitted after key operations complete. Event delivery is fire-and-forget; a subscriber error is logged but does not affect other subscribers or the emitting caller.
 
-### Shutdown sequence inside `Stop`
+**Delta store** -- An in-memory store that records INSERT, UPDATE, and DELETE operations without forwarding them to the source database. On every read, the delta is overlaid on top of source records: updates replace matching source rows, tombstones suppress deleted rows, and net-new inserts are appended.
 
-`Stop` is idempotent. It runs `vdb.server.stop` (drain → halt → emit) then closes the internal shutdown channel, unblocking `Run`.
+**Transaction isolation** -- When a connection opens a transaction (BEGIN), it receives a private staging delta (`TxDelta`). All writes within the transaction go to `TxDelta` and are invisible to other connections. On COMMIT, `TxDelta` is merged into the shared live delta using last-write-wins semantics. On ROLLBACK, `TxDelta` is discarded -- the live delta is never touched by in-transaction writes, so no undo work is required.
 
----
+**Schema cache** -- Stores table column lists and primary key columns as reported by the driver. The cache is consulted during delta overlay to build stable record keys.
 
-## DriverAPI — the bridge
-
-`DriverAPI` is the interface the driver calls back into the framework. The framework implements it; the driver consumes it. Application code never implements it.
-
-```go
-type DriverAPI interface {
-    // Connection lifecycle
-    ConnectionOpened(id uint32, user, addr string) error
-    ConnectionClosed(id uint32, user, addr string)
-
-    // Transaction lifecycle
-    TransactionBegun(connID uint32, readOnly bool) error
-    TransactionCommitted(connID uint32) error
-    TransactionRolledBack(connID uint32, savepoint string)
-
-    // Query interception
-    QueryReceived(connID uint32, query, database string) (string, error)
-    QueryCompleted(connID uint32, query string, rowsAffected int64, err error)
-
-    // Row read hooks
-    RecordsSource(connID uint32, table string, records []map[string]any) ([]map[string]any, error)
-    RecordsMerged(connID uint32, table string, records []map[string]any) ([]map[string]any, error)
-
-    // Write hooks
-    RecordInserted(connID uint32, table string, record map[string]any) (map[string]any, error)
-    RecordUpdated(connID uint32, table string, old, new map[string]any) (map[string]any, error)
-    RecordDeleted(connID uint32, table string, record map[string]any) error
-
-    // Schema management
-    SchemaLoaded(table string, columns []string, pkCol string)
-    SchemaInvalidated(table string)
-}
-```
-
-Each method fires one pipeline synchronously and returns when all handlers have run. `QueryReceived` is the exception — it can return a rewritten query string that the driver should execute instead of the original.
+**Plugin system** -- Plugins are out-of-process executables. Each plugin directory contains a manifest (`manifest.json`, `manifest.yaml`, or `manifest.yml`) that declares the plugin name, version, launch command, and optional environment variables. At startup, the plugin manager launches each plugin as a subprocess, communicates over a Unix domain socket using JSON-RPC 2.0, and wires the plugin's declared pipeline handlers and event subscriptions into the live framework.
 
 ---
 
 ## Pipelines
 
-Fourteen pipelines are declared at startup. Names, points, and the built-in handler registered at each point are listed below. Application code and plugins can attach additional handlers at any point.
+Each pipeline is identified by a dot-separated name. Points within a pipeline are named `<pipeline>.<point>`.
 
 ### Lifecycle
 
-#### `vdb.context.create`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.context.create.build_context` | `framework.BuildContext` — stamps a fresh `CorrelationID`. |
-| `vdb.context.create.contribute` | `lifecycle` — runs the `GlobalContextBuilder` contribution phase. |
-| `vdb.context.create.seal` | `lifecycle` — seals the builder into an immutable `GlobalContext`. |
-| `vdb.context.create.emit` | `lifecycle` — emits `vdb.server.started`. |
-
-#### `vdb.server.start`
-| Point | Built-in handler |
-|---|---|
-| `vdb.server.start.build_context` | `framework.BuildContext` |
-| `vdb.server.start.configure` | `lifecycle` — validates that `UseDriver` was called. |
-| `vdb.server.start.launch` | `lifecycle` — calls `Server.Run()` in a goroutine. |
-| `vdb.server.start.emit` | *(emit point — no built-in subscriber)* |
-
-#### `vdb.server.stop`
-| Point | Built-in handler |
-|---|---|
-| `vdb.server.stop.build_context` | `framework.BuildContext` |
-| `vdb.server.stop.drain` | `lifecycle` — initiates plugin shutdown. |
-| `vdb.server.stop.halt` | `lifecycle` — calls `Server.Stop()`. |
-| `vdb.server.stop.emit` | `lifecycle` — emits `vdb.server.stopped`. |
+| `vdb.context.create` | `build_context` -> `contribute` -> `seal` -> `emit` |
+| `vdb.server.start` | `build_context` -> `configure` -> `launch` -> `emit` |
+| `vdb.server.stop` | `build_context` -> `drain` -> `halt` -> `emit` |
 
 ### Connection
 
-#### `vdb.connection.opened`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.connection.opened.build_context` | `framework.BuildContext` |
-| `vdb.connection.opened.accept` | *(available for access-control handlers)* |
-| `vdb.connection.opened.track` | `connection` — stores a new `Conn` entry in the connection state map. |
-| `vdb.connection.opened.emit` | `emit` — emits `vdb.connection.opened`. |
-
-#### `vdb.connection.closed`
-| Point | Built-in handler |
-|---|---|
-| `vdb.connection.closed.build_context` | `framework.BuildContext` |
-| `vdb.connection.closed.cleanup` | *(available for cleanup handlers)* |
-| `vdb.connection.closed.release` | `connection` — removes the `Conn` entry. |
-| `vdb.connection.closed.emit` | `emit` — emits `vdb.connection.closed`. |
+| `vdb.connection.opened` | `build_context` -> `accept` -> `track` -> `emit` |
+| `vdb.connection.closed` | `build_context` -> `cleanup` -> `release` -> `emit` |
 
 ### Transaction
 
-#### `vdb.transaction.begin`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.transaction.begin.build_context` | `framework.BuildContext` |
-| `vdb.transaction.begin.authorize` | `transaction` — allocates a fresh private `TxDelta` on the connection. |
-| `vdb.transaction.begin.emit` | `emit` — emits `vdb.transaction.started`. |
-
-#### `vdb.transaction.commit`
-| Point | Built-in handler |
-|---|---|
-| `vdb.transaction.commit.build_context` | `framework.BuildContext` |
-| `vdb.transaction.commit.apply` | `transaction` — merges `TxDelta` into the live delta (last-write-wins), then nils `TxDelta`. |
-| `vdb.transaction.commit.emit` | `emit` — emits `vdb.transaction.committed`. |
-
-#### `vdb.transaction.rollback`
-| Point | Built-in handler |
-|---|---|
-| `vdb.transaction.rollback.build_context` | `framework.BuildContext` |
-| `vdb.transaction.rollback.apply` | `transaction` — nils `TxDelta` (live delta is untouched; no undo needed). |
-| `vdb.transaction.rollback.emit` | `emit` — emits `vdb.transaction.rolledback`. |
+| `vdb.transaction.begin` | `build_context` -> `authorize` -> `emit` |
+| `vdb.transaction.commit` | `build_context` -> `apply` -> `emit` |
+| `vdb.transaction.rollback` | `build_context` -> `apply` -> `emit` |
 
 ### Query
 
-#### `vdb.query.received`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.query.received.build_context` | `framework.BuildContext` |
-| `vdb.query.received.intercept` | `connection` — updates the tracked current database name for the connection. |
-| `vdb.query.received.emit` | *(emit point — no built-in subscriber)* |
+| `vdb.query.received` | `build_context` -> `intercept` -> `emit` |
 
-### Records (read path)
+### Records
 
-The read path fires two pipelines per table scan. `vdb.records.source` fires just after source rows are read and before the delta overlay; `vdb.records.merged` fires after the overlay with the final row set.
-
-#### `vdb.records.source`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.records.source.build_context` | `framework.BuildContext` |
-| `vdb.records.source.transform` | `write` — applies the delta overlay. Pass-1: live delta. Pass-2 (if inside a transaction): connection's `TxDelta`, giving read-your-own-writes visibility. |
-| `vdb.records.source.emit` | *(emit point — no built-in subscriber)* |
-
-#### `vdb.records.merged`
-| Point | Built-in handler |
-|---|---|
-| `vdb.records.merged.build_context` | `framework.BuildContext` |
-| `vdb.records.merged.transform` | *(available for post-overlay transformation)* |
-| `vdb.records.merged.emit` | *(emit point — no built-in subscriber)* |
+| `vdb.records.source` | `build_context` -> `transform` -> `emit` |
+| `vdb.records.merged` | `build_context` -> `transform` -> `emit` |
 
 ### Writes
 
-Each write pipeline fires synchronously as the database engine processes the statement. The `apply` point records the mutation in the appropriate delta (live or `TxDelta`).
-
-#### `vdb.write.insert`
-| Point | Built-in handler |
+| Pipeline | Points |
 |---|---|
-| `vdb.write.insert.build_context` | `framework.BuildContext` |
-| `vdb.write.insert.apply` | `write` — calls `delta.ApplyInsert`. |
-| `vdb.write.insert.emit` | `emit` — emits `vdb.record.inserted`. |
-
-#### `vdb.write.update`
-| Point | Built-in handler |
-|---|---|
-| `vdb.write.update.build_context` | `framework.BuildContext` |
-| `vdb.write.update.apply` | `write` — calls `delta.ApplyUpdate` (or `ApplyUpdateWithFallback` when writing to `TxDelta`, to resolve stable keys across implicit transaction boundaries). |
-| `vdb.write.update.emit` | `emit` — emits `vdb.record.updated`. |
-
-#### `vdb.write.delete`
-| Point | Built-in handler |
-|---|---|
-| `vdb.write.delete.build_context` | `framework.BuildContext` |
-| `vdb.write.delete.apply` | `write` — calls `delta.ApplyDelete`. |
-| `vdb.write.delete.emit` | `emit` — emits `vdb.record.deleted`. |
+| `vdb.write.insert` | `build_context` -> `apply` -> `emit` |
+| `vdb.write.update` | `build_context` -> `apply` -> `emit` |
+| `vdb.write.delete` | `build_context` -> `apply` -> `emit` |
 
 ---
 
 ## Events
 
-Twelve standard events are declared at startup. All use fire-and-forget delivery. Handlers that return a non-nil error are logged but do not propagate to callers.
+Events are emitted after their corresponding operation completes. Subscribers receive a typed payload.
 
-| Event name | Fired by | Payload type |
-|---|---|---|
-| `vdb.server.stopped` | `vdb.server.stop.emit` | `payloads.ServerStoppedPayload` |
-| `vdb.connection.opened` | `vdb.connection.opened.emit` | `payloads.ConnectionOpenedPayload` |
-| `vdb.connection.closed` | `vdb.connection.closed.emit` | `payloads.ConnectionClosedPayload` |
-| `vdb.transaction.started` | `vdb.transaction.begin.emit` | `payloads.TransactionBeginPayload` |
-| `vdb.transaction.committed` | `vdb.transaction.commit.emit` | `payloads.TransactionCommitPayload` |
-| `vdb.transaction.rolledback` | `vdb.transaction.rollback.emit` | `payloads.TransactionRollbackPayload` |
-| `vdb.query.completed` | `QueryCompleted` on `DriverAPI` | `payloads.QueryCompletedPayload` |
-| `vdb.record.inserted` | `vdb.write.insert.emit` | `payloads.WriteInsertPayload` |
-| `vdb.record.updated` | `vdb.write.update.emit` | `payloads.WriteUpdatePayload` |
-| `vdb.record.deleted` | `vdb.write.delete.emit` | `payloads.WriteDeletePayload` |
-| `vdb.schema.loaded` | `SchemaLoaded` on `DriverAPI` | `payloads.SchemaLoadedPayload` |
-| `vdb.schema.invalidated` | `SchemaInvalidated` on `DriverAPI` | `payloads.SchemaInvalidatedPayload` |
-
-Plugins may declare additional events. Custom events must be declared (via `app.DeclareEvent` or the plugin's `declare` message) before any subscriber or emitter references them.
+| Event | Emitted after |
+|---|---|
+| `vdb.server.stopped` | Graceful shutdown completes |
+| `vdb.connection.opened` | A new client connection is accepted |
+| `vdb.connection.closed` | A client connection is released |
+| `vdb.transaction.started` | A transaction begins |
+| `vdb.transaction.committed` | A transaction commits |
+| `vdb.transaction.rolledback` | A transaction rolls back |
+| `vdb.query.completed` | A query finishes execution |
+| `vdb.record.inserted` | A record is written to the delta as a new insert |
+| `vdb.record.updated` | A record overlay is written to the delta |
+| `vdb.record.deleted` | A tombstone is written to the delta |
+| `vdb.schema.loaded` | Table schema is loaded into the cache |
+| `vdb.schema.invalidated` | Cached table schema is invalidated |
 
 ---
 
-## Extension points
+## Public API
+
+All public types and functions are in the root package `github.com/AnqorDX/vdb-core`. Nothing under `internal/` is part of the public API.
+
+### Types
+
+```go
+type Config struct {
+    // PluginDir is the directory scanned one level deep for plugin manifests
+    // at startup. An empty string disables plugin loading.
+    PluginDir string
+}
+
+// PointFunc is the handler signature for pipeline points.
+type PointFunc func(ctx any, payload any) (any, any, error)
+
+// EventFunc is the handler signature for event subscribers.
+type EventFunc func(ctx any, payload any) error
+```
+
+### Server interface
+
+Implemented by the driver. The framework calls `Run` and `Stop`.
+
+```go
+type Server interface {
+    Run() error   // Binds the port and blocks until Stop is called.
+    Stop() error  // Signals Run to return and releases the port.
+}
+```
+
+### DriverAPI interface
+
+Implemented by the framework. The driver calls these methods as database events occur.
+
+```go
+type DriverAPI interface {
+    ConnectionOpened(id uint32, user, addr string) error
+    ConnectionClosed(id uint32, user, addr string)
+    TransactionBegun(connID uint32, readOnly bool) error
+    TransactionCommitted(connID uint32) error
+    TransactionRolledBack(connID uint32, savepoint string)
+    QueryReceived(connID uint32, query, database string) (string, error)
+    QueryCompleted(connID uint32, query string, rowsAffected int64, err error)
+    RecordsSource(connID uint32, table string, records []map[string]any) ([]map[string]any, error)
+    RecordsMerged(connID uint32, table string, records []map[string]any) ([]map[string]any, error)
+    RecordInserted(connID uint32, table string, record map[string]any) (map[string]any, error)
+    RecordUpdated(connID uint32, table string, old, new map[string]any) (map[string]any, error)
+    RecordDeleted(connID uint32, table string, record map[string]any) error
+    SchemaLoaded(table string, columns []string, pkCol string)
+    SchemaInvalidated(table string)
+}
+```
+
+### App
+
+```go
+// New creates a fully initialised App ready for configuration.
+func New(cfg Config) *App
+
+// DriverAPI returns the framework's DriverAPI implementation.
+// Pass this to the driver constructor before calling UseDriver.
+func (a *App) DriverAPI() DriverAPI
+
+// UseDriver registers the database server. Must be called before Run.
+func (a *App) UseDriver(s Server) *App
+
+// Attach registers a handler at the named pipeline point with the given priority.
+// Panics if the point name is not declared, or if called after Run.
+func (a *App) Attach(point string, priority int, fn PointFunc) *App
+
+// Subscribe registers a handler for the named event.
+// Panics if called after Run. Logs a warning and drops if the event is undeclared.
+func (a *App) Subscribe(event string, fn EventFunc) *App
+
+// DeclareEvent declares a new event on the bus. Used by plugins and extensions
+// that own events not in the standard vdb.* set.
+func (a *App) DeclareEvent(event string)
+
+// DeclarePipeline declares a new pipeline with the given point sequence.
+// Used by plugins and extensions that own pipelines not in the standard vdb.* set.
+func (a *App) DeclarePipeline(name string, pointNames []string)
+
+// Emit dispatches payload to all subscribers of the named event.
+func (a *App) Emit(event string, payload any)
+
+// Process runs the named pipeline with the given payload.
+func (a *App) Process(pipeline string, payload any) (any, error)
+
+// Run executes the startup sequence and blocks until Stop is called or the
+// server exits. May only be called once per App.
+func (a *App) Run() error
+
+// Stop executes graceful shutdown and unblocks Run. Idempotent.
+func (a *App) Stop()
+```
+
+---
+
+## Usage
+
+### Minimal wiring
+
+```go
+package main
+
+import (
+    "log"
+
+    core   "github.com/AnqorDX/vdb-core"
+    driver "your/driver"
+)
+
+func main() {
+    app := core.New(core.Config{
+        PluginDir: "plugins",
+    })
+    app.UseDriver(driver.New(driverCfg, app.DriverAPI()))
+
+    if err := app.Run(); err != nil {
+        log.Fatalf("vdb: %v", err)
+    }
+}
+```
 
 ### Attaching a pipeline handler
 
+Handlers attach to a named point at a priority. The framework's built-in handlers register at priority 10. Use a lower number to run before them, a higher number to run after.
+
 ```go
-// Priority 50 runs after the built-in handler at priority 10.
-app.Attach("vdb.records.source.transform", 50, func(ctx any, p any) (any, any, error) {
-    payload := p.(payloads.RecordsSourcePayload)
-    // inspect or mutate payload.Records
+app.Attach("vdb.query.received.intercept", 5, func(ctx any, payload any) (any, any, error) {
+    p := payload.(payloads.QueryReceivedPayload)
+    log.Printf("query from conn %d: %s", p.ConnectionID, p.Query)
     return ctx, payload, nil
 })
 ```
 
-`PointFunc` signature: `func(ctx any, payload any) (any, any, error)`
-
-`ctx` carries a `framework.HandlerContext` with `Global` (the sealed process-wide context) and `CorrelationID` (causal chain identifiers). Return the (possibly mutated) ctx and payload; return a non-nil error to abort the pipeline.
-
 ### Subscribing to an event
 
 ```go
-app.Subscribe("vdb.record.inserted", func(ctx any, p any) error {
-    payload := p.(payloads.WriteInsertPayload)
-    log.Printf("inserted into %s: %v", payload.Table, payload.Record)
+app.Subscribe("vdb.record.inserted", func(ctx any, payload any) error {
+    log.Printf("insert: %+v", payload)
     return nil
 })
 ```
 
-### Declaring custom pipelines and events
+### Handler context
 
-```go
-app.DeclarePipeline("acl.check", []string{
-    "acl.check.build_context",
-    "acl.check.evaluate",
-    "acl.check.emit",
-})
-app.DeclareEvent("acl.denied")
+Every `PointFunc` and `EventFunc` receives a `framework.HandlerContext` as its first argument. It carries a `GlobalContext` (the sealed, process-wide key-value store) and a `CorrelationID` that traces the causal chain across pipeline runs and event emissions.
+
+The `GlobalContext` is populated during `vdb.context.create`. Handlers at `vdb.context.create.contribute` may store values in the provided `*framework.GlobalContextBuilder` before it is sealed.
+
+---
+
+## Plugin System
+
+Plugins are standalone executables managed by the framework at runtime.
+
+### Plugin directory layout
+
+```
+plugins/
+L my-plugin/
+    +-- manifest.json   (or manifest.yaml / manifest.yml)
+    L   my-plugin       (the executable)
 ```
 
-Custom pipelines and events are first-class — plugins, application handlers, and the `App.Process`/`App.Emit` helpers can all use them.
-
----
-
-## Delta store
-
-The delta records three categories of mutation per table, all keyed by **`RecordKey`** — a canonical string derived from the sorted field values of a record.
-
-| Category | Storage key | Description |
-|---|---|---|
-| **Inserts** | `RecordKey(current_state)` | Net-new rows with no counterpart in the source database. |
-| **Updates** | `RecordKey(original_source_row)` — the *stable key* | Upsert overlays for existing source rows. The key never changes as the row is updated further. |
-| **Tombstones** | Stable key | Deleted source rows. A tombstone supersedes any update overlay for the same row. |
-
-A fourth map, `currentToStable`, tracks `RecordKey(current_state) → stable_key` so that chained updates can always resolve back to the original source key regardless of how many times the row has been modified.
-
-### Overlay algorithm
-
-When `vdb.records.source.transform` runs, it merges the delta over the source row slice:
-
-1. For each source row, compute its `RecordKey`.
-2. If the key appears in **tombstones** → drop the row.
-3. If the key appears in **updates** → replace the row with the overlay value.
-4. Otherwise → pass the source row through unchanged.
-5. Append all **inserts** whose keys were not seen in the source rows.
-
-### Delta operations
-
-```go
-d.ApplyInsert(table, record)                          // net-new row
-d.ApplyUpdate(table, oldRecord, newRecord)            // overlay update
-d.ApplyUpdateWithFallback(table, old, new, fallback)  // update with cross-boundary key resolution (see below)
-d.ApplyDelete(table, record)                          // tombstone
-d.Merge(src)                                          // COMMIT: replay src into d (last-write-wins)
-```
-
-All operations are safe for concurrent use.
-
----
-
-## Transaction isolation
-
-### Design
-
-VirtualDB uses a **private staging delta** model rather than a traditional undo-log:
-
-| Aspect | MySQL (InnoDB) | VDB |
-|---|---|---|
-| In-transaction writes go to | Shared buffer pool (undo log for rollback) | Per-connection private `TxDelta` |
-| `ROLLBACK` mechanism | Apply undo log in reverse | Drop `TxDelta` — live delta was never touched |
-| `COMMIT` mechanism | Mark undo log reclaimable (data already shared) | Merge `TxDelta` into live delta |
-| Isolation | MVCC read views | Private `TxDelta` invisible to all other connections |
-
-### Read-your-own-writes
-
-When `vdb.records.source.transform` runs for a connection with an open transaction:
-
-- **Pass 1** — overlay the live delta (committed state, visible to all connections).
-- **Pass 2** — overlay the connection's `TxDelta` on top of pass-1 results, so the writing connection can immediately read back its own uncommitted changes.
-
-Other connections skip pass 2 entirely.
-
-### Chained updates across implicit transaction boundaries
-
-GMS wraps every autocommit statement in its own implicit `BEGIN` / `COMMIT`. This means a second `UPDATE` whose `WHERE` clause targets a value written by the first `UPDATE` arrives in a freshly allocated `TxDelta` that has no `currentToStable` mapping for the intermediate row value.
-
-`ApplyUpdateWithFallback` solves this: before acquiring the write lock, it reads the live delta's `currentToStable` to pre-resolve the stable key. The first UPDATE's mapping was committed into the live delta, so the second UPDATE can still find the original source key and write its overlay at the correct position.
-
-### Known limitations
-
-- **Last-write-wins on COMMIT** is the declared conflict policy. If two concurrent connections modify the same row and both commit, the later `COMMIT` wins with no error raised. Full row-level conflict detection is future work.
-- **`RecordKey` includes all field values**, not just the primary key. Insert-level PK deduplication does not exist in the delta; `ON DUPLICATE KEY UPDATE` and duplicate `INSERT` detection require driver-level or engine-level handling.
-
----
-
-## Schema cache
-
-The schema cache maps table names to their column list and primary key column. It is populated by `SchemaLoaded` calls from the driver (typically triggered when the engine introspects a table for the first time) and cleared by `SchemaInvalidated`.
-
-The delta overlay uses the schema cache to validate that a table's schema is known before applying mutations. An unknown table is skipped with a warning log rather than an error, so a missing cache entry degrades gracefully.
-
----
-
-## Plugin system
-
-Plugins are independent subprocesses discovered at `Run` time by scanning the configured `PluginDir` one level deep. Each subdirectory may contain a `manifest.json` or `manifest.yaml` file.
-
-### Manifest format
+### Manifest fields
 
 ```json
 {
   "name":    "my-plugin",
   "version": "1.0.0",
-  "command": ["/opt/plugins/my-plugin/bin/my-plugin"],
-  "env":     { "LOG_LEVEL": "info" }
+  "command": ["./my-plugin"],
+  "env":     { "SOME_VAR": "value" }
 }
 ```
 
-`command` is executed as a subprocess. The framework passes the Unix socket path via the `VDB_PLUGIN_SOCKET` environment variable (merged with `env`). The plugin must connect to that socket within 10 seconds.
+### Startup handshake
 
-### Connection protocol (JSON-RPC 2.0 over Unix socket)
+1. The framework launches the plugin process with `VDB_SOCKET` set to the path of a Unix domain socket.
+2. The plugin connects to the socket.
+3. The plugin sends a JSON-RPC 2.0 `declare` notification listing the pipeline points it handles, the events it subscribes to, the events it declares, and any custom pipelines it owns.
+4. The framework registers adapter handlers and subscriptions that forward calls to the plugin over the socket.
+5. The framework sends a `shutdown` request before process exit; plugins that do not respond within the configured timeout are killed.
 
-The protocol is newline-delimited JSON-RPC 2.0. The plugin speaks first.
+### Plugin JSON-RPC methods (host to plugin)
 
-**Step 1 — Plugin sends `declare` notification**
+| Method | Direction | Description |
+|---|---|---|
+| `handle_pipeline_point` | request | Deliver a pipeline point invocation; plugin returns the modified payload |
+| `handle_event` | notification | Deliver an event to the plugin |
+| `shutdown` | request | Signal the plugin to exit cleanly |
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method":  "declare",
-  "params": {
-    "plugin_id": "my-plugin",
-    "pipeline_handlers": [
-      { "point": "vdb.records.source.transform", "priority": 50 }
-    ],
-    "event_subscriptions":   ["vdb.record.inserted"],
-    "event_declarations":    ["my-plugin.alert.fired"],
-    "pipeline_declarations": []
-  }
-}
-```
+### Plugin JSON-RPC methods (plugin to host)
 
-**Step 2 — Framework dispatches `handle_pipeline_point` requests**
-
-When a handler registered by the plugin is reached during pipeline processing, the framework sends a synchronous request and waits for the response:
-
-```json
-// request
-{ "jsonrpc": "2.0", "id": 1, "method": "handle_pipeline_point",
-  "params": { "point": "vdb.records.source.transform", "payload": { ... } } }
-
-// response
-{ "jsonrpc": "2.0", "id": 1, "result": { "payload": { ... } } }
-```
-
-**Step 3 — Framework sends `handle_event` notifications (fire-and-forget)**
-
-```json
-{ "jsonrpc": "2.0", "method": "handle_event",
-  "params": { "event": "vdb.record.inserted", "payload": { ... } } }
-```
-
-**Step 4 — Plugin may send `emit_event` requests**
-
-A plugin can emit events it declared in its `event_declarations` list:
-
-```json
-{ "jsonrpc": "2.0", "id": 42, "method": "emit_event",
-  "params": { "event": "my-plugin.alert.fired", "payload": { ... } } }
-```
-
-**Shutdown** — the framework sends a `shutdown` request and waits for the ack before killing the process.
-
-### Plugin isolation
-
-- A plugin that crashes does not crash the framework. The monitor goroutine logs the exit and marks the plugin as failed; its pipeline handler adapters remain registered but return errors.
-- Shutdown is parallel across all plugins with a per-plugin timeout (default 10 s).
+| Method | Direction | Description |
+|---|---|---|
+| `declare` | notification | Sent once at startup; declares all handlers, subscriptions, and declarations |
+| `emit_event` | request | Ask the host to emit a plugin-owned event onto the bus |
 
 ---
 
-## Package map
+## Handler Priorities
 
-```
-github.com/AnqorDX/vdb-core         — public API (App, DriverAPI, Config, Server)
-  internal/
-    framework/                       — Pipeline and Bus wrappers; HandlerContext; GlobalContext
-    points/                          — Canonical pipeline and event name constants
-    delta/                           — Mutation store: ApplyInsert/Update/Delete, Merge, Overlay
-    connection/                      — Per-connection state (Conn, State)
-    transaction/                     — BEGIN/COMMIT/ROLLBACK handlers; TxDelta lifecycle
-    write/                           — Write interception handlers; delta overlay (Overlay func)
-    schema/                          — Table schema cache
-    driverapi/                       — DriverAPI implementation; pipeline dispatch
-    lifecycle/                       — Startup/shutdown pipeline handlers
-    emit/                            — Standard event emission handlers
-    plugin/                          — Plugin manager; manifest loading; JSON-RPC protocol
-    payloads/                        — Payload structs for all pipelines and events
-```
+Pipeline points accept multiple handlers at different priorities. Lower priority numbers run first.
 
-All packages under `internal/` are implementation details. Only the root `core` package is part of the public API.
+| Priority range | Intended use |
+|---|---|
+| 1 - 9 | Pre-processing; runs before built-in framework handlers |
+| 10 | Built-in framework handlers (reserved) |
+| 11 - 99 | Post-processing; runs after built-in framework handlers |
+
+---
+
+## Startup Sequence
+
+`App.Run()` executes the following steps in order:
+
+1. **`vdb.context.create`** -- Builds and seals the process-wide `GlobalContext`. Handlers at `vdb.context.create.contribute` may contribute key-value pairs before sealing.
+2. **Plugin connect** -- Scans `PluginDir`, launches plugin subprocesses, and wires their declared handlers and subscriptions.
+3. **`vdb.server.start`** -- Starts the registered `Server` in a goroutine.
+4. **Idle** -- Blocks until `Stop()` is called, the server exits, or `SIGTERM`/`SIGINT` is received.
+
+### Shutdown sequence
+
+`App.Stop()` executes:
+
+1. **`vdb.server.stop`** -- Drains plugins (sends `shutdown` to each), then calls `Server.Stop()`.
+2. Closes the internal shutdown channel, unblocking `Run()`.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## License
+
+Elastic License 2.0 (ELv2). See [`LICENSE.md`](LICENSE.md) for the full text.
