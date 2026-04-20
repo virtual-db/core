@@ -1,6 +1,6 @@
 package framework
 
-import "github.com/virtual-db/dispatch"
+import "github.com/AnqorDX/dispatch"
 
 // EventFunc is the signature for all event subscribers.
 // Returning a non-nil error is logged but does not affect other subscribers

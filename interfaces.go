@@ -5,8 +5,8 @@
 //	github.com/virtual-db/core
 //
 // All sub-packages under internal/ are implementation details.
-// The pipeline and event bus engines are provided by github.com/virtual-db/pipeline
-// and github.com/virtual-db/dispatch, imported only by internal/framework.
+// The pipeline and event bus engines are provided by github.com/AnqorDX/pipeline
+// and github.com/AnqorDX/dispatch, imported only by internal/framework.
 package core
 
 // PointFunc is the handler type for all pipeline point handlers.
