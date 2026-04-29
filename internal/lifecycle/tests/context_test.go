@@ -1,5 +1,10 @@
 // Package lifecycle_test exercises the lifecycle.Handlers using a real
 // framework.Pipeline and framework.Bus. No stubs for the registrar.
+//
+// vdb.context.create is a host-only pipeline: it runs before plugins connect,
+// so out-of-process plugin handlers can never be invoked on it. The tests in
+// this file exercise the in-process attachment path — the intended use for
+// drivers and embedders that call app.Attach before app.Run.
 package lifecycle_test
 
 import (
@@ -85,6 +90,9 @@ func newLifecycleEnv(t *testing.T) (*framework.Pipeline, *stubApp) {
 // TestContextCreate_SealIsCalledWithBuilderPayload verifies that processing
 // vdb.context.create causes SetGlobal to be called with a real sealed context
 // (one whose Bus() is non-nil).
+//
+// This exercises the internal seal mechanics. vdb.context.create is host-only;
+// the in-process pipeline is used directly here, not a plugin declare path.
 func TestContextCreate_SealIsCalledWithBuilderPayload(t *testing.T) {
 	pipe, app := newLifecycleEnv(t)
 
@@ -101,6 +109,11 @@ func TestContextCreate_SealIsCalledWithBuilderPayload(t *testing.T) {
 // attached at vdb.context.create.contribute (priority 5, before the seal
 // handler at 10) can add arbitrary values to the GlobalContextBuilder, and
 // that those values survive sealing and are accessible on the final global.
+//
+// This is the primary use case for the contribute point: in-process host code
+// (a driver, an embedder) calls app.Attach on this point before app.Run to
+// inject startup values into the process-wide GlobalContext. It is not
+// accessible to out-of-process plugins.
 func TestContextCreate_ContributeHandlerCanAddValues(t *testing.T) {
 	pipe, app := newLifecycleEnv(t)
 

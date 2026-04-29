@@ -1,3 +1,4 @@
+// Package connection owns all pipeline points that interact with connection state.
 package connection
 
 import (
@@ -41,9 +42,9 @@ func (h *Handlers) Register(r framework.Registrar) error {
 
 // TrackOpened stores a new Conn entry when a connection is opened.
 func (h *Handlers) TrackOpened(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.ConnectionOpenedPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("connection.opened.track: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.ConnectionOpenedPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("connection.opened.track: %w", err)
 	}
 	h.state.Set(payload.ConnectionID, &Conn{
 		ID:   payload.ConnectionID,
@@ -55,9 +56,9 @@ func (h *Handlers) TrackOpened(ctx any, p any) (any, any, error) {
 
 // ReleaseOnClose removes the Conn entry when a connection is closed.
 func (h *Handlers) ReleaseOnClose(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.ConnectionClosedPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("connection.closed.release: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.ConnectionClosedPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("connection.closed.release: %w", err)
 	}
 	h.state.Delete(payload.ConnectionID)
 	return ctx, payload, nil
@@ -65,9 +66,9 @@ func (h *Handlers) ReleaseOnClose(ctx any, p any) (any, any, error) {
 
 // UpdateDatabase updates the tracked database name for a connection.
 func (h *Handlers) UpdateDatabase(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.QueryReceivedPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("query.received.intercept: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.QueryReceivedPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("query.received.intercept: %w", err)
 	}
 	if payload.Database != "" {
 		if c, found := h.state.Get(payload.ConnectionID); found {

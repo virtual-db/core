@@ -2,6 +2,18 @@
 //
 // Black-box integration tests for App.Run() and App.Stop().
 // All unexported-field tests have been dropped; only public API is exercised.
+//
+// Pipeline accessibility note:
+//
+//	vdb.context.create is host-only: it runs before plugins connect, so
+//	out-of-process plugin handlers can never be invoked on it. Tests in the
+//	"vdb.context.create tests" section below exercise the in-process attachment
+//	path — the intended use for drivers and embedders that call app.Attach
+//	before app.Run.
+//
+//	vdb.server.stop is host-only: plugin cleanup on shutdown is handled by the
+//	shutdown JSON-RPC request sent at the drain point, not by plugin pipeline
+//	handlers. Tests for stop behaviour verify App.Stop() mechanics only.
 package core_test
 
 import (
@@ -97,10 +109,16 @@ func startEmitReadyCh(t *testing.T, app *App) <-chan struct{} {
 	return ch
 }
 
-// ── vdb.context.create tests ──────────────────────────────────────────────
+// ── vdb.context.create tests (host-only, in-process attach path) ──────────
+//
+// vdb.context.create is host-only. The contribute point is the extension point
+// for in-process host code — drivers and embedders that call app.Attach before
+// app.Run — to inject values into the process-wide GlobalContext before it is
+// sealed. Out-of-process plugins cannot reach any point in this pipeline.
 
 // TestRunContextCreateContributeHonored verifies that a handler at
-// vdb.context.create.contribute can store a key-value pair visible after seal.
+// vdb.context.create.contribute can store a key-value pair that survives sealing.
+// This exercises the in-process (host-only) attach path, not a plugin declare path.
 func TestRunContextCreateContributeHonored(t *testing.T) {
 	app := New(Config{})
 	srv := newRecordingServer()
@@ -130,8 +148,9 @@ func TestRunContextCreateContributeHonored(t *testing.T) {
 	awaitRunReturn(t, runCh)
 }
 
-// TestRunContextCreateMultipleContributors verifies that multiple contribute
-// handlers can each add their own key without causing a startup failure.
+// TestRunContextCreateMultipleContributors verifies that multiple in-process
+// contribute handlers can each add their own key without causing a startup
+// failure. Exercises the host-only contribute point with concurrent priorities.
 func TestRunContextCreateMultipleContributors(t *testing.T) {
 	app := New(Config{})
 	srv := newRecordingServer()
@@ -330,6 +349,9 @@ func TestRunReturnsNilOnCleanServerExit(t *testing.T) {
 	}
 }
 
+// TestRunStartupHandlerErrorAbortsRun verifies that an error returned by an
+// in-process handler on the host-only vdb.context.create.contribute point
+// causes App.Run() to return that error immediately without starting the server.
 func TestRunStartupHandlerErrorAbortsRun(t *testing.T) {
 	app := New(Config{})
 	app.Attach(points.PointContextCreateContribute, 10,

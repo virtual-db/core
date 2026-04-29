@@ -75,9 +75,9 @@ func (h *Handlers) Register(r framework.Registrar) error {
 // When the connection has an open transaction the row goes to TxDelta and
 // remains invisible to other connections until COMMIT.
 func (h *Handlers) InsertApply(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.WriteInsertPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.insert.apply: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteInsertPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.insert.apply: %w", err)
 	}
 	if _, found := h.schema.Get(payload.Table); !found {
 		log.Printf("write.insert.apply: schema not loaded for table %q; delta key may be incorrect", payload.Table)
@@ -93,9 +93,9 @@ func (h *Handlers) InsertApply(ctx any, p any) (any, any, error) {
 // When the connection has an open transaction the overlay goes to TxDelta and
 // remains invisible to other connections until COMMIT.
 func (h *Handlers) UpdateApply(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.WriteUpdatePayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.update.apply: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteUpdatePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.update.apply: %w", err)
 	}
 	if _, found := h.schema.Get(payload.Table); !found {
 		log.Printf("write.update.apply: schema not loaded for table %q; delta key may be incorrect", payload.Table)
@@ -106,14 +106,14 @@ func (h *Handlers) UpdateApply(ctx any, p any) (any, any, error) {
 	// transaction boundaries: the first UPDATE's currentToStable mapping was
 	// merged into the live delta, so a freshly allocated TxDelta for the second
 	// UPDATE cannot find it without consulting the live delta.
-	var err error
+	var applyErr error
 	if d != h.delta {
-		err = d.ApplyUpdateWithFallback(payload.Table, payload.OldRecord, payload.NewRecord, h.delta)
+		applyErr = d.ApplyUpdateWithFallback(payload.Table, payload.OldRecord, payload.NewRecord, h.delta)
 	} else {
-		err = d.ApplyUpdate(payload.Table, payload.OldRecord, payload.NewRecord)
+		applyErr = d.ApplyUpdate(payload.Table, payload.OldRecord, payload.NewRecord)
 	}
-	if err != nil {
-		return ctx, nil, fmt.Errorf("write.update.apply: backend error: %w", err)
+	if applyErr != nil {
+		return ctx, nil, fmt.Errorf("write.update.apply: backend error: %w", applyErr)
 	}
 	return ctx, payload, nil
 }
@@ -122,9 +122,9 @@ func (h *Handlers) UpdateApply(ctx any, p any) (any, any, error) {
 // When the connection has an open transaction the tombstone goes to TxDelta
 // and remains invisible to other connections until COMMIT.
 func (h *Handlers) DeleteApply(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.WriteDeletePayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.delete.apply: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteDeletePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.delete.apply: %w", err)
 	}
 	if _, found := h.schema.Get(payload.Table); !found {
 		log.Printf("write.delete.apply: schema not loaded for table %q; tombstone key may be incorrect", payload.Table)
@@ -134,14 +134,14 @@ func (h *Handlers) DeleteApply(ctx any, p any) (any, any, error) {
 	// stable-key resolution. This handles DELETE of a row whose RecordKey
 	// changed due to an UPDATE committed in a prior implicit transaction: the
 	// currentToStable mapping lives in the live delta, not in the fresh TxDelta.
-	var err error
+	var applyErr error
 	if d != h.delta {
-		err = d.ApplyDeleteWithFallback(payload.Table, payload.Record, h.delta)
+		applyErr = d.ApplyDeleteWithFallback(payload.Table, payload.Record, h.delta)
 	} else {
-		err = d.ApplyDelete(payload.Table, payload.Record)
+		applyErr = d.ApplyDelete(payload.Table, payload.Record)
 	}
-	if err != nil {
-		return ctx, nil, fmt.Errorf("write.delete.apply: backend error: %w", err)
+	if applyErr != nil {
+		return ctx, nil, fmt.Errorf("write.delete.apply: backend error: %w", applyErr)
 	}
 	return ctx, payload, nil
 }
@@ -157,9 +157,9 @@ func (h *Handlers) DeleteApply(ctx any, p any) (any, any, error) {
 // visibility into its uncommitted changes while keeping those changes
 // completely invisible to every other connection.
 func (h *Handlers) RecordsOverlay(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.RecordsSourcePayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("records.source.transform: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.RecordsSourcePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("records.source.transform: %w", err)
 	}
 
 	// Pass 1: apply the shared live delta (committed state, visible to all).
