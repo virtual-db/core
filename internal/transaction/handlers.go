@@ -59,9 +59,9 @@ func (h *Handlers) Register(r framework.Registrar) error {
 // The live delta is never modified by in-transaction writes, so ROLLBACK
 // requires no undo work — it simply discards TxDelta.
 func (h *Handlers) Authorize(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.TransactionBeginPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.begin.authorize: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionBeginPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.begin.authorize: %w", err)
 	}
 	if state, found := h.conns.Get(payload.ConnectionID); found {
 		state.TxDelta = delta.New()
@@ -76,9 +76,9 @@ func (h *Handlers) Authorize(ctx any, p any) (any, any, error) {
 // If the connection has no open transaction (TxDelta == nil) the call is a
 // no-op, matching MySQL's behaviour for COMMIT outside a transaction.
 func (h *Handlers) CommitApply(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.TransactionCommitPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.commit.apply: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionCommitPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.commit.apply: %w", err)
 	}
 	if state, found := h.conns.Get(payload.ConnectionID); found && state.TxDelta != nil {
 		h.delta.Merge(state.TxDelta)
@@ -95,9 +95,9 @@ func (h *Handlers) CommitApply(ctx any, p any) (any, any, error) {
 // If the connection has no open transaction (TxDelta == nil) the call is a
 // no-op, matching MySQL's behaviour for ROLLBACK outside a transaction.
 func (h *Handlers) RollbackApply(ctx any, p any) (any, any, error) {
-	payload, ok := p.(payloads.TransactionRollbackPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.rollback.apply: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionRollbackPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.rollback.apply: %w", err)
 	}
 	if state, found := h.conns.Get(payload.ConnectionID); found {
 		state.TxDelta = nil

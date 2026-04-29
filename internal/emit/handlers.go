@@ -64,9 +64,9 @@ func (h *Handlers) ServerStopped(ctx any, p any) (any, any, error) {
 // ConnectionOpened fires vdb.connection.opened from vdb.connection.opened.emit.
 func (h *Handlers) ConnectionOpened(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.ConnectionOpenedPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("connection.opened.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.ConnectionOpenedPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("connection.opened.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventConnectionOpened, payload, hctx)
 	return ctx, payload, nil
@@ -75,9 +75,9 @@ func (h *Handlers) ConnectionOpened(ctx any, p any) (any, any, error) {
 // ConnectionClosed fires vdb.connection.closed from vdb.connection.closed.emit.
 func (h *Handlers) ConnectionClosed(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.ConnectionClosedPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("connection.closed.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.ConnectionClosedPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("connection.closed.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventConnectionClosed, payload, hctx)
 	return ctx, payload, nil
@@ -86,9 +86,9 @@ func (h *Handlers) ConnectionClosed(ctx any, p any) (any, any, error) {
 // TransactionStarted fires vdb.transaction.started from vdb.transaction.begin.emit.
 func (h *Handlers) TransactionStarted(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.TransactionBeginPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.begin.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionBeginPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.begin.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventTransactionStarted, payload, hctx)
 	return ctx, payload, nil
@@ -97,9 +97,9 @@ func (h *Handlers) TransactionStarted(ctx any, p any) (any, any, error) {
 // TransactionCommitted fires vdb.transaction.committed from vdb.transaction.commit.emit.
 func (h *Handlers) TransactionCommitted(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.TransactionCommitPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.commit.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionCommitPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.commit.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventTransactionCommitted, payload, hctx)
 	return ctx, payload, nil
@@ -108,9 +108,9 @@ func (h *Handlers) TransactionCommitted(ctx any, p any) (any, any, error) {
 // TransactionRolledBack fires vdb.transaction.rolledback from vdb.transaction.rollback.emit.
 func (h *Handlers) TransactionRolledBack(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.TransactionRollbackPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("transaction.rollback.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.TransactionRollbackPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("transaction.rollback.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventTransactionRolledback, payload, hctx)
 	return ctx, payload, nil
@@ -119,9 +119,9 @@ func (h *Handlers) TransactionRolledBack(ctx any, p any) (any, any, error) {
 // RecordInserted fires vdb.record.inserted from vdb.write.insert.emit.
 func (h *Handlers) RecordInserted(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.WriteInsertPayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.insert.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteInsertPayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.insert.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventRecordInserted, payload, hctx)
 	return ctx, payload, nil
@@ -130,9 +130,9 @@ func (h *Handlers) RecordInserted(ctx any, p any) (any, any, error) {
 // RecordUpdated fires vdb.record.updated from vdb.write.update.emit.
 func (h *Handlers) RecordUpdated(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.WriteUpdatePayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.update.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteUpdatePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.update.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventRecordUpdated, payload, hctx)
 	return ctx, payload, nil
@@ -141,9 +141,9 @@ func (h *Handlers) RecordUpdated(ctx any, p any) (any, any, error) {
 // RecordDeleted fires vdb.record.deleted from vdb.write.delete.emit.
 func (h *Handlers) RecordDeleted(ctx any, p any) (any, any, error) {
 	hctx := ctx.(framework.HandlerContext)
-	payload, ok := p.(payloads.WriteDeletePayload)
-	if !ok {
-		return ctx, nil, fmt.Errorf("write.delete.emit: unexpected payload type %T", p)
+	payload, err := payloads.Decode[payloads.WriteDeletePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.delete.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventRecordDeleted, payload, hctx)
 	return ctx, payload, nil

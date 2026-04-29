@@ -1,6 +1,11 @@
 // Package lifecycle_test exercises the lifecycle.Handlers using a real
 // framework.Pipeline and framework.Bus. No stubs for the registrar.
 // stubApp is defined in context_test.go (same package namespace).
+//
+// vdb.server.stop is a host-only pipeline: plugin cleanup on shutdown is
+// handled by the shutdown JSON-RPC request sent at the drain point, not by
+// plugin pipeline handlers. The tests in this file exercise the internal
+// mechanics of the stop sequence using in-process handlers and stubs.
 package lifecycle_test
 
 import (
@@ -84,6 +89,9 @@ func newServerEnv(t *testing.T) (*framework.Pipeline, *stubApp, *stubServer) {
 // vdb.server.start causes srv.Run() to be invoked asynchronously. The stub
 // returns immediately; we drain app.errCh with a deadline to confirm the
 // goroutine fired and srv.runCalled is set.
+//
+// vdb.server.start is plugin-accessible (runs after ConnectAll). This test
+// exercises the built-in launch handler in isolation.
 func TestServerStart_Launch_CallsServerRunInGoroutine(t *testing.T) {
 	pipe, app, srv := newServerEnv(t)
 
@@ -107,6 +115,10 @@ func TestServerStart_Launch_CallsServerRunInGoroutine(t *testing.T) {
 
 // TestServerStop_Halt_CallsServerStop verifies that processing vdb.server.stop
 // synchronously calls srv.Stop() before Process returns.
+//
+// vdb.server.stop is host-only: all points in this pipeline are internal to
+// the framework shutdown sequence. Plugin cleanup happens via the shutdown RPC
+// at the drain point, not via plugin pipeline handlers.
 func TestServerStop_Halt_CallsServerStop(t *testing.T) {
 	pipe, _, srv := newServerEnv(t)
 
@@ -122,6 +134,11 @@ func TestServerStop_Halt_CallsServerStop(t *testing.T) {
 // TestServerStop_Drain_CallsPluginsShutdown verifies that the drain step does
 // not panic when plugin.Manager.Shutdown is called on an empty manager, and
 // that Process returns a nil error.
+//
+// The drain point is the mechanism by which all connected plugin processes are
+// terminated before the server listener is halted. It is internal to the
+// framework; there is no plugin expansion value here beyond the shutdown RPC
+// that each plugin receives.
 func TestServerStop_Drain_CallsPluginsShutdown(t *testing.T) {
 	pipe, _, _ := newServerEnv(t)
 
@@ -132,6 +149,8 @@ func TestServerStop_Drain_CallsPluginsShutdown(t *testing.T) {
 
 // TestServerStop_NilServer_NoOp verifies that when app.GetServer() returns nil
 // the halt handler is a no-op: no panic and Process returns nil.
+//
+// This covers the case where App.Run is called without a registered driver.
 func TestServerStop_NilServer_NoOp(t *testing.T) {
 	pipe, app, _ := newServerEnv(t)
 	app.server = nil
