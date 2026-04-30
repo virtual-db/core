@@ -3,7 +3,6 @@ package write
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/virtual-db/core/internal/delta"
 	"github.com/virtual-db/core/internal/schema"
@@ -18,15 +17,20 @@ func Overlay(
 	table string,
 	source []map[string]any,
 ) ([]map[string]any, error) {
-	if _, ok := sc.Get(table); !ok {
-		log.Printf("records.source.transform: schema not loaded for table %q; "+
-			"skipping delta overlay — source records returned unmerged", table)
-		return source, nil
-	}
 
 	state, err := d.TableState(table)
 	if err != nil {
 		return nil, fmt.Errorf("TableState(%q): %w", table, err)
+	}
+
+	// A truncated table has no source rows visible. Return only delta inserts
+	// (rows inserted after the TRUNCATE), ignoring all source data.
+	if state.Truncated {
+		result := make([]map[string]any, 0, len(state.Inserts))
+		for _, rec := range state.Inserts {
+			result = append(result, rec)
+		}
+		return result, nil
 	}
 
 	if len(state.Inserts) == 0 && len(state.Updates) == 0 && len(state.Tombstones) == 0 {

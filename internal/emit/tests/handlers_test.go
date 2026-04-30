@@ -51,6 +51,9 @@ func newEmitEnv(t *testing.T) (*framework.Pipeline, *framework.Bus) {
 	pipe.DeclarePipeline(points.PipelineWriteDelete, []string{
 		points.PointWriteDeleteBuildContext, points.PointWriteDeleteApply, points.PointWriteDeleteEmit,
 	})
+	pipe.DeclarePipeline(points.PipelineWriteTruncate, []string{
+		points.PointWriteTruncateBuildContext, points.PointWriteTruncateApply, points.PointWriteTruncateEmit,
+	})
 
 	// Declare all bus events the emit handlers fire.
 	bus.DeclareEvent(points.EventServerStopped)
@@ -62,6 +65,7 @@ func newEmitEnv(t *testing.T) (*framework.Pipeline, *framework.Bus) {
 	bus.DeclareEvent(points.EventRecordInserted)
 	bus.DeclareEvent(points.EventRecordUpdated)
 	bus.DeclareEvent(points.EventRecordDeleted)
+	bus.DeclareEvent(points.EventTableTruncated)
 
 	h := New()
 	if err := h.Register(pipe); err != nil {

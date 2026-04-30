@@ -60,6 +60,8 @@ func (h *Handlers) Register(r framework.Registrar) error {
 		{points.PointWriteUpdateApply, 10, h.UpdateApply},
 		{points.PointWriteDeleteBuildContext, 10, framework.BuildContext},
 		{points.PointWriteDeleteApply, 10, h.DeleteApply},
+		{points.PointWriteTruncateBuildContext, 10, framework.BuildContext},
+		{points.PointWriteTruncateApply, 10, h.TruncateApply},
 		{points.PointRecordsSourceBuildContext, 10, framework.BuildContext},
 		{points.PointRecordsSourceTransform, 10, h.RecordsOverlay},
 		{points.PointRecordsMergedBuildContext, 10, framework.BuildContext},
@@ -143,6 +145,19 @@ func (h *Handlers) DeleteApply(ctx any, p any) (any, any, error) {
 	if applyErr != nil {
 		return ctx, nil, fmt.Errorf("write.delete.apply: backend error: %w", applyErr)
 	}
+	return ctx, payload, nil
+}
+
+// TruncateApply marks a table as truncated in the appropriate delta.
+// All existing mutations for the table are cleared; new inserts after the
+// truncate are still recorded normally via subsequent InsertApply calls.
+func (h *Handlers) TruncateApply(ctx any, p any) (any, any, error) {
+	payload, err := payloads.Decode[payloads.WriteTruncatePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.truncate.apply: %w", err)
+	}
+	d := h.targetDelta(payload.ConnectionID)
+	d.ApplyTruncate(payload.Table)
 	return ctx, payload, nil
 }
 

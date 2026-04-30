@@ -8,6 +8,38 @@ import (
 	. "github.com/virtual-db/core/internal/write"
 )
 
+// TestOverlay_NoSchema_WithInsert_SurfacesDeltaRow is the regression test for
+// CREATE TABLE tables.  A virtually-created table has no source schema, so
+// sc.Get returns false.  Before the fix, Overlay returned the empty source
+// slice without ever checking the delta, making inserted rows invisible.
+// After the fix, Overlay must surface delta inserts regardless of whether
+// the schema cache has an entry for the table.
+func TestOverlay_NoSchema_WithInsert_SurfacesDeltaRow(t *testing.T) {
+	d := delta.New()
+	sc := schema.NewCache()
+	// Deliberately do NOT call sc.Load — simulating a CREATE TABLE virtual table.
+
+	newRow := map[string]any{"id": 1, "label": "signup"}
+	if err := d.ApplyInsert("events", newRow); err != nil {
+		t.Fatalf("ApplyInsert: %v", err)
+	}
+
+	result, err := Overlay(d, sc, "events", []map[string]any{})
+	if err != nil {
+		t.Fatalf("Overlay returned unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 row (delta insert), got %d — schema-not-found guard blocked the overlay", len(result))
+	}
+	if result[0]["label"] != "signup" {
+		t.Errorf("expected label \"signup\", got %v", result[0]["label"])
+	}
+}
+
+// TestOverlay_NoSchema_ReturnsSourceUnchanged verifies that when the schema
+// cache has no entry for a table AND the delta has no mutations, the source
+// rows are returned as-is.  This is the common read-only path for tables that
+// have not yet been touched by any write.
 func TestOverlay_NoSchema_ReturnsSourceUnchanged(t *testing.T) {
 	d := delta.New()
 	sc := schema.NewCache()

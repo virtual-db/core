@@ -21,6 +21,9 @@ type tableState struct {
 	// tombstones records deleted source rows. Keyed by the stable source RecordKey.
 	tombstones map[string]struct{}
 
+	// truncated is true when ApplyTruncate has been called for this table.
+	truncated bool
+
 	// currentToStable maps RecordKey(current_state) -> stable_source_key.
 	currentToStable map[string]string
 }
@@ -85,5 +88,6 @@ func copyTableState(tbl *tableState) *tableState {
 	for k, v := range tbl.currentToStable {
 		out.currentToStable[k] = v
 	}
+	out.truncated = tbl.truncated
 	return out
 }

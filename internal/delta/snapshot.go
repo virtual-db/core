@@ -35,6 +35,7 @@ func (d *Delta) Merge(src *Delta) {
 		updates         map[string]map[string]any
 		tombstones      map[string]struct{}
 		currentToStable map[string]string
+		truncated       bool
 	}
 
 	src.mu.RLock()
@@ -56,7 +57,7 @@ func (d *Delta) Merge(src *Delta) {
 		for k, v := range tbl.currentToStable {
 			cts[k] = v
 		}
-		snaps[table] = tableSnapshot{ins, upd, ts, cts}
+		snaps[table] = tableSnapshot{ins, upd, ts, cts, tbl.truncated}
 	}
 	src.mu.RUnlock()
 
@@ -69,6 +70,10 @@ func (d *Delta) Merge(src *Delta) {
 	defer d.mu.Unlock()
 
 	for table, snap := range snaps {
+		if snap.truncated {
+			d.tables[table] = newTableState()
+			d.tables[table].truncated = true
+		}
 		dst := d.tableFor(table)
 
 		for k, v := range snap.inserts {

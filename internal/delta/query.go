@@ -37,6 +37,9 @@ type DeltaTableState struct {
 
 	// Tombstones is the set of deleted source rows.
 	Tombstones map[string]struct{}
+
+	// Truncated is true when ApplyTruncate has been called for this table.
+	Truncated bool
 }
 
 func (d *Delta) TableState(table string) (DeltaTableState, error) {
@@ -49,6 +52,7 @@ func (d *Delta) TableState(table string) (DeltaTableState, error) {
 			Inserts:    make(map[string]map[string]any),
 			Updates:    make(map[string]map[string]any),
 			Tombstones: make(map[string]struct{}),
+			Truncated:  false,
 		}, nil
 	}
 
@@ -64,11 +68,13 @@ func (d *Delta) TableState(table string) (DeltaTableState, error) {
 	for k := range tbl.tombstones {
 		tombstones[k] = struct{}{}
 	}
+	truncated := tbl.truncated
 
 	return DeltaTableState{
 		Inserts:    inserts,
 		Updates:    updates,
 		Tombstones: tombstones,
+		Truncated:  truncated,
 	}, nil
 }
 

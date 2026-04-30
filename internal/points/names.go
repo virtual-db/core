@@ -52,6 +52,7 @@ const (
 	PipelineWriteInsert         = "vdb.write.insert"
 	PipelineWriteUpdate         = "vdb.write.update"
 	PipelineWriteDelete         = "vdb.write.delete"
+	PipelineWriteTruncate       = "vdb.write.truncate"
 )
 
 // ── Point full name constants — host-only lifecycle pipelines ─────────────
@@ -173,6 +174,13 @@ const (
 	PointWriteDeleteEmit         = "vdb.write.delete.emit"
 )
 
+// vdb.write.truncate points.
+const (
+	PointWriteTruncateBuildContext = "vdb.write.truncate.build_context"
+	PointWriteTruncateApply        = "vdb.write.truncate.apply"
+	PointWriteTruncateEmit         = "vdb.write.truncate.emit"
+)
+
 // ── Event name constants ──────────────────────────────────────────────────
 //
 // All events are observable by both in-process and out-of-process subscribers.
@@ -194,4 +202,5 @@ const (
 	EventRecordDeleted         = "vdb.record.deleted"
 	EventSchemaLoaded          = "vdb.schema.loaded"
 	EventSchemaInvalidated     = "vdb.schema.invalidated"
+	EventTableTruncated        = "vdb.table.truncated"
 )
