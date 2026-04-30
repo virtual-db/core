@@ -52,6 +52,7 @@ type DriverAPI interface {
 	RecordInserted(connID uint32, table string, record map[string]any) (map[string]any, error)
 	RecordUpdated(connID uint32, table string, old, new map[string]any) (map[string]any, error)
 	RecordDeleted(connID uint32, table string, record map[string]any) error
+	TableTruncated(connID uint32, table string) error
 	SchemaLoaded(table string, columns []string, pkCol string)
 	SchemaInvalidated(table string)
 }

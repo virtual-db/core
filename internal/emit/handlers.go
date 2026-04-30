@@ -46,6 +46,7 @@ func (h *Handlers) Register(r framework.Registrar) error {
 		{points.PointWriteInsertEmit, 10, h.RecordInserted},
 		{points.PointWriteUpdateEmit, 10, h.RecordUpdated},
 		{points.PointWriteDeleteEmit, 10, h.RecordDeleted},
+		{points.PointWriteTruncateEmit, 10, h.TableTruncated},
 	} {
 		if err := r.Attach(reg.point, reg.priority, reg.fn); err != nil {
 			return fmt.Errorf("emit: attach %q: %w", reg.point, err)
@@ -146,5 +147,16 @@ func (h *Handlers) RecordDeleted(ctx any, p any) (any, any, error) {
 		return ctx, nil, fmt.Errorf("write.delete.emit: %w", err)
 	}
 	hctx.Global.Bus().Emit(points.EventRecordDeleted, payload, hctx)
+	return ctx, payload, nil
+}
+
+// TableTruncated fires vdb.table.truncated from vdb.write.truncate.emit.
+func (h *Handlers) TableTruncated(ctx any, p any) (any, any, error) {
+	hctx := ctx.(framework.HandlerContext)
+	payload, err := payloads.Decode[payloads.WriteTruncatePayload](p)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("write.truncate.emit: %w", err)
+	}
+	hctx.Global.Bus().Emit(points.EventTableTruncated, payload, hctx)
 	return ctx, payload, nil
 }

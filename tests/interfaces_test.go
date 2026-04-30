@@ -41,6 +41,7 @@ func (n *noopDriverAPI) RecordUpdated(_ uint32, _ string, _, new map[string]any)
 func (n *noopDriverAPI) RecordDeleted(_ uint32, _ string, _ map[string]any) error { return nil }
 func (n *noopDriverAPI) SchemaLoaded(_ string, _ []string, _ string)              {}
 func (n *noopDriverAPI) SchemaInvalidated(_ string)                               {}
+func (n *noopDriverAPI) TableTruncated(_ uint32, _ string) error                  { return nil }
 
 var _ core.DriverAPI = (*noopDriverAPI)(nil)
 

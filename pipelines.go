@@ -5,7 +5,7 @@ import (
 	"github.com/virtual-db/core/internal/points"
 )
 
-// declarePipelines registers all 14 standard vdb.* pipelines with their ordered
+// declarePipelines registers all 15 standard vdb.* pipelines with their ordered
 // point sequences. (The delta.provide pipeline has been eliminated.)
 func declarePipelines(p *framework.Pipeline) {
 	p.DeclarePipeline(points.PipelineContextCreate, []string{
@@ -83,6 +83,11 @@ func declarePipelines(p *framework.Pipeline) {
 		points.PointWriteDeleteApply,
 		points.PointWriteDeleteEmit,
 	})
+	p.DeclarePipeline(points.PipelineWriteTruncate, []string{
+		points.PointWriteTruncateBuildContext,
+		points.PointWriteTruncateApply,
+		points.PointWriteTruncateEmit,
+	})
 }
 
 // declareEvents registers all 12 standard vdb.* event names on the bus.
@@ -99,4 +104,5 @@ func declareEvents(bus *framework.Bus) {
 	bus.DeclareEvent(points.EventRecordDeleted)
 	bus.DeclareEvent(points.EventSchemaLoaded)
 	bus.DeclareEvent(points.EventSchemaInvalidated)
+	bus.DeclareEvent(points.EventTableTruncated)
 }

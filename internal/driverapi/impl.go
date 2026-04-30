@@ -178,6 +178,15 @@ func (d *Impl) RecordDeleted(connID uint32, table string, record map[string]any)
 	return err
 }
 
+func (d *Impl) TableTruncated(connID uint32, table string) error {
+	payload := payloads.WriteTruncatePayload{
+		ConnectionID: connID,
+		Table:        table,
+	}
+	_, err := d.pipe.Process(points.PipelineWriteTruncate, payload)
+	return err
+}
+
 func (d *Impl) SchemaLoaded(table string, columns []string, pkCol string) {
 	d.schema.Load(table, columns, pkCol)
 	d.bus.Emit(points.EventSchemaLoaded, payloads.SchemaLoadedPayload{

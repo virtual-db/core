@@ -34,6 +34,9 @@ func newWritePipe(t *testing.T) (*framework.Pipeline, *schema.Cache, *delta.Delt
 	pipe.DeclarePipeline(points.PipelineRecordsMerged, []string{
 		points.PointRecordsMergedBuildContext, points.PointRecordsMergedTransform, points.PointRecordsMergedEmit,
 	})
+	pipe.DeclarePipeline(points.PipelineWriteTruncate, []string{
+		points.PointWriteTruncateBuildContext, points.PointWriteTruncateApply, points.PointWriteTruncateEmit,
+	})
 
 	sc := schema.NewCache()
 	d := delta.New()
@@ -162,13 +165,15 @@ func TestHandlers_Register_ReturnsNilError(t *testing.T) {
 	pipe.DeclarePipeline(points.PipelineRecordsMerged, []string{
 		points.PointRecordsMergedBuildContext, points.PointRecordsMergedTransform, points.PointRecordsMergedEmit,
 	})
+	pipe.DeclarePipeline(points.PipelineWriteTruncate, []string{
+		points.PointWriteTruncateBuildContext, points.PointWriteTruncateApply, points.PointWriteTruncateEmit,
+	})
 
 	sc := schema.NewCache()
 	d := delta.New()
 	conns := connection.NewState()
 	h := New(sc, d, conns)
-
 	if err := h.Register(pipe); err != nil {
-		t.Errorf("expected Register to return nil error, got: %v", err)
+		t.Fatalf("expected Register to return nil error, got: %v", err)
 	}
 }

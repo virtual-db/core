@@ -125,6 +125,23 @@ func (d *Delta) ApplyDeleteWithFallback(table string, record map[string]any, fal
 	return d.applyDelete(table, record, fallback)
 }
 
+// ApplyTruncate marks the table as truncated in the delta. All existing
+// mutations (inserts, updates, tombstones, currentToStable) for the table are
+// cleared — they are superseded by the truncation. Any rows inserted after
+// ApplyTruncate will still be recorded via subsequent ApplyInsert calls.
+// Source rows are suppressed entirely by the Overlay read path when Truncated
+// is set.
+func (d *Delta) ApplyTruncate(table string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	tbl := d.tableFor(table)
+	tbl.truncated = true
+	tbl.inserts = make(map[string]map[string]any)
+	tbl.updates = make(map[string]map[string]any)
+	tbl.tombstones = make(map[string]struct{})
+	tbl.currentToStable = make(map[string]string)
+}
+
 // applyDelete is the shared implementation behind ApplyDelete and
 // ApplyDeleteWithFallback.
 func (d *Delta) applyDelete(table string, record map[string]any, fallback *Delta) error {

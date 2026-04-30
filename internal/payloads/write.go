@@ -21,3 +21,9 @@ type WriteDeletePayload struct {
 	Table        string
 	Record       map[string]any
 }
+
+// WriteTruncatePayload is the payload for the vdb.write.truncate pipeline.
+type WriteTruncatePayload struct {
+	ConnectionID uint32
+	Table        string
+}
